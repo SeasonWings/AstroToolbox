@@ -1,9 +1,9 @@
 {
   "name": "astro-toolbox",
-  "version": "0.1.7",
+  "version": "0.1.8-beta",
   "private": true,
   "author": "Maple",
-  "description": "AstroToolbox desktop app built with Electron, Vue 3, TypeScript and Ant Design Vue.",
+  "description": "诛仙世界工具箱",
   "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron:build\" \"npm:dev:electron:launch\"",

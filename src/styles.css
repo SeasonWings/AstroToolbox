@@ -419,6 +419,10 @@ code {
   font-size: 15px;
 }
 
+.release-notes {
+  white-space: pre-line;
+}
+
 .empty-card {
   margin-top: 18px;
   padding-block: 36px;

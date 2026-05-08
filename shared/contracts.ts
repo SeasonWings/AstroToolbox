@@ -4,6 +4,8 @@ export const REQUIRED_SETTING_FILES = {
   system: 'ZXSystemSetting.cfg',
 } as const;
 
+export const SPEED_SYSTEM_SETTING_FILE = 'ZXSystemSettingFast.cfg';
+
 export const SERVER_SYNC_FILE = 'IsSaveServer.cfg';
 
 export const SETTING_LABELS: Record<keyof typeof REQUIRED_SETTING_FILES, string> = {

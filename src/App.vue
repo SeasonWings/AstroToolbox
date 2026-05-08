@@ -1206,7 +1206,7 @@ onUnmounted(() => {
         </div>
         <div>
           <span>发布说明</span>
-          <strong>{{ updateState.releaseNotes || '暂无说明' }}</strong>
+          <strong class="release-notes">{{ updateState.releaseNotes || '暂无说明' }}</strong>
         </div>
         <div v-if="updateState.downloadDirectory">
           <span>下载目录</span>
