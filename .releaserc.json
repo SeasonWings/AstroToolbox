@@ -1,0 +1,32 @@
+{
+  "branches": ["main", { "name": "beta", "prerelease": true }],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    "@semantic-release/changelog",
+    ["@semantic-release/npm", { "npmPublish": false }],
+    [
+      "@semantic-release/exec",
+      {
+        "prepareCmd": "npm run build && npx electron-builder --publish never"
+      }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "assets": [
+          { "path": "release/*.exe", "label": "Windows Installer" },
+          { "path": "release/*.yml" },
+          { "path": "release/*.blockmap" }
+        ]
+      }
+    ],
+    [
+      "@semantic-release/git",
+      {
+        "assets": ["package.json", "CHANGELOG.md"],
+        "message": "chore(release): ${nextRelease.version} [skip ci]"
+      }
+    ]
+  ]
+}
