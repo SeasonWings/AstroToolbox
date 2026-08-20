@@ -1,301 +1,99 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
-import { message, Modal } from 'ant-design-vue';
-import {
-  REQUIRED_SETTING_FILES,
-  SETTING_LABELS,
-  type BackupPackageInfo,
-  type RoleProfile,
-  type SaveClientType,
-  type SettingKey,
-  type ToolboxBootstrap,
-  type UidUnameMapping,
-  type UpdateErrorStage,
-  type UpdateState,
-} from '../shared/contracts';
+import { computed, onMounted, onUnmounted, provide, reactive, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { message } from 'ant-design-vue';
+import { getClientLabel, getErrorMessage } from './composables/useFormat';
+import { useWindowControls } from './composables/useWindowControls';
+import { useBootstrapStore } from './stores/bootstrap';
+import { usePackagesStore } from './stores/packages';
+import { useRolesStore } from './stores/roles';
+import { useUidMappingsStore } from './stores/uidMappings';
+import { useUpdateStore } from './stores/update';
 
-type ViewKey = 'config' | 'roles' | 'archives';
+const route = useRoute();
+const router = useRouter();
+const bootstrapStore = useBootstrapStore();
+const rolesStore = useRolesStore();
+const packagesStore = usePackagesStore();
+const uidMappingsStore = useUidMappingsStore();
+const updateStore = useUpdateStore();
+const { isWindowMaximized, syncMaximizedState, minimize, toggleMaximize, close } = useWindowControls();
 
-const toolboxApi = window.astroToolbox;
-const currentView = ref<ViewKey>('config');
-const selectedMenuKeys = ref<string[]>([]);
 const openMenuKeys = ref<string[]>(['role-sync']);
-const isWindowMaximized = ref(false);
-const bootstrap = ref<ToolboxBootstrap | null>(null);
-const roles = ref<RoleProfile[]>([]);
-const packages = ref<BackupPackageInfo[]>([]);
-const uidMappings = ref<UidUnameMapping[]>([]);
-const editableSavePath = ref('');
-const updateState = ref<UpdateState>({
-  status: 'idle',
-  currentVersion: '',
-  nextVersion: null,
-  isForced: false,
-  releaseNotes: '',
-  downloadProgress: 0,
-  message: '等待检查更新。',
-  policyVersion: null,
-  downloadPageUrl: null,
-  lastCheckedAt: null,
-  errorStage: null,
-  errorMessage: null,
-  errorDetail: null,
-  downloadedFile: null,
-  downloadDirectory: null,
-});
-const showUpdateModal = ref(false);
-let stopUpdateStateListener: (() => void) | null = null;
-
-const loading = reactive({
-  bootstrap: false,
-  roles: false,
-  packages: false,
-  uidMappings: false,
-  savePath: false,
-  backup: false,
-  apply: false,
-  rename: false,
-  remove: false,
-  uidMappingSave: false,
-  updateCheck: false,
-  updateDownload: false,
-  updatePreferences: false,
-});
-
-const backupModal = reactive({
-  open: false,
-  role: null as RoleProfile | null,
-  archiveName: '',
-});
-
-const applyModal = reactive({
-  open: false,
-  role: null as RoleProfile | null,
-  step: 0,
-  selectedPackageFilename: '',
-  selectedSettings: [] as SettingKey[],
-});
-
-const renameModal = reactive({
-  open: false,
-  target: null as BackupPackageInfo | null,
-  newDisplayName: '',
-});
-
-const uidMappingModal = reactive({
-  open: false,
-  uid: '',
-  uname: '',
-});
-
 const savePathChoiceModal = reactive({
   open: false,
   selectedSavePath: '',
   fromRequiredChoice: false,
 });
 
-const settingOptions = (Object.entries(REQUIRED_SETTING_FILES) as [SettingKey, string][])
-  .map(([value]) => ({
-    value,
-    label: SETTING_LABELS[value],
-  }));
-
-const settingCheckboxOptions = settingOptions.map((option) => ({
-  value: option.value,
-  label: option.label,
-}));
-
-const updateChannelOptions = [
-  { value: 'stable', label: '稳定版' },
-  { value: 'beta', label: '测试版' },
-];
-
-const pageMeta: Record<ViewKey, { title: string }> = {
+const pageMeta: Record<string, { title: string }> = {
   config: { title: '工具箱配置' },
   roles: { title: '角色备份' },
   archives: { title: '存档管理' },
+  home: { title: '工具箱配置' },
 };
 
-const uidToUnameMap = computed(() => new Map(uidMappings.value.map((item) => [item.uid, item.uname] as const)));
+const viewTitle = computed(() => pageMeta[String(route.name)]?.title ?? '工具箱配置');
+const selectedMenuKeys = computed(() => {
+  if (route.name === 'roles') {
+    return ['roles'];
+  }
 
-const selectedPackage = computed(() => {
-  return packages.value.find((item) => item.filename === applyModal.selectedPackageFilename) ?? null;
+  if (route.name === 'archives') {
+    return ['archives'];
+  }
+
+  return [];
 });
 
-const sortedRoles = computed(() => {
-  return [...roles.value].sort((left, right) => {
-    const leftHasMapping = uidToUnameMap.value.has(left.folderName);
-    const rightHasMapping = uidToUnameMap.value.has(right.folderName);
-
-    if (leftHasMapping !== rightHasMapping) {
-      return Number(rightHasMapping) - Number(leftHasMapping);
-    }
-
-    return right.updatedAt.localeCompare(left.updatedAt);
-  });
-});
-
-const viewTitle = computed(() => pageMeta[currentView.value].title);
 const stats = computed(() => ({
-  roleCount: roles.value.length,
-  packageCount: packages.value.length,
-  savePathExists: Boolean(bootstrap.value?.savePathExists),
+  roleCount: rolesStore.roles.length,
+  packageCount: packagesStore.packages.length,
+  savePathExists: bootstrapStore.savePathExists,
 }));
-const updateStatusLabel = computed(() => {
-  switch (updateState.value.status) {
-    case 'checking':
-      return '检查中';
-    case 'available':
-      return '有新版本';
-    case 'downloading':
-      return '下载中';
-    case 'ready':
-      return '可安装';
-    case 'not-available':
-      return '已最新';
-    case 'disabled':
-      return '已关闭';
-    case 'error':
-      return '异常';
-    default:
-      return '待检查';
-  }
-});
-const updateStatusColor = computed(() => {
-  switch (updateState.value.status) {
-    case 'available':
-      return 'orange';
-    case 'downloading':
-      return 'processing';
-    case 'ready':
-      return 'green';
-    case 'not-available':
-      return 'blue';
-    case 'disabled':
-      return 'default';
-    case 'error':
-      return 'red';
-    default:
-      return 'default';
-  }
-});
-const updateErrorStageLabels: Record<UpdateErrorStage, string> = {
-  'policy-fetch': '策略拉取',
-  'check-update': '检查更新',
-  'download-start': '开始下载',
-  'download-progress': '下载过程中',
-  'download-complete': '下载完成',
-  install: '安装更新',
-};
-const updateErrorStageLabel = computed(() => {
-  const stage = updateState.value.errorStage;
 
-  if (!stage) {
-    return '';
-  }
+const updateStatusLabel = computed(() => updateStore.updateStatusLabel);
+const updateStatusColor = computed(() => updateStore.updateStatusColor);
 
-  return updateErrorStageLabels[stage];
-});
-const updateErrorDisplayMessage = computed(() => {
-  if (!updateState.value.errorStage) {
-    return updateState.value.message;
-  }
-
-  return `${updateErrorStageLabel.value}失败：${updateState.value.message}`;
-});
-const updateChannel = computed({
-  get: () => bootstrap.value?.updateChannel ?? 'stable',
-  set: (value: string) => {
-    void handleUpdatePreferenceChange({ updateChannel: value });
-  },
-});
-const autoUpdateEnabled = computed({
-  get: () => bootstrap.value?.autoUpdateEnabled ?? true,
-  set: (value: boolean) => {
-    void handleUpdatePreferenceChange({ autoUpdateEnabled: value });
-  },
-});
-
-function setInitialView(): void {
-  const hasSavePath = Boolean(bootstrap.value?.savePathExists || bootstrap.value?.autoDetectedExists);
-
-  currentView.value = hasSavePath ? 'roles' : 'config';
-  selectedMenuKeys.value = hasSavePath ? ['roles'] : [];
-}
-
-function getRoleDisplayName(role?: RoleProfile | null): string {
-  if (!role) {
-    return '';
-  }
-
-  return uidToUnameMap.value.get(role.folderName) ?? role.folderName;
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat('zh-CN', {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value));
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`;
-  }
-
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-}
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return '发生未知错误，请稍后重试。';
-}
-
-function getClientLabel(client: SaveClientType): string {
-  return client === 'speed' ? '极速端' : '标准端';
-}
-
-async function saveChosenDetectedPath(savePath: string): Promise<void> {
-  loading.savePath = true;
-
+async function runSafe(action: () => Promise<void>): Promise<void> {
   try {
-    bootstrap.value = await toolboxApi.updateSavePath(savePath);
-    editableSavePath.value = bootstrap.value.savePath;
-    await refreshRoles();
-    message.success('存档路径已保存。');
+    await action();
   } catch (error) {
     message.error(getErrorMessage(error));
-  } finally {
-    loading.savePath = false;
   }
 }
 
 function openSavePathChoiceModal(detectedOnly = false): void {
-  if (!bootstrap.value?.detectedSavePaths.length) {
+  if (!bootstrapStore.detectedSavePaths.length) {
     message.warning('当前未检测到可用存档路径。');
     return;
   }
 
-  savePathChoiceModal.selectedSavePath = editableSavePath.value || bootstrap.value.detectedSavePaths[0]?.savePath || '';
-  savePathChoiceModal.fromRequiredChoice = !detectedOnly && Boolean(bootstrap.value?.requiresSavePathChoice && !bootstrap.value?.savePath);
+  savePathChoiceModal.selectedSavePath =
+    bootstrapStore.editableSavePath || bootstrapStore.detectedSavePaths[0]?.savePath || '';
+  savePathChoiceModal.fromRequiredChoice =
+    !detectedOnly && Boolean(bootstrapStore.requiresSavePathChoice && !bootstrapStore.bootstrap?.savePath);
   savePathChoiceModal.open = true;
 }
 
 function closeSavePathChoiceModal(): void {
   savePathChoiceModal.open = false;
 
-  if (savePathChoiceModal.fromRequiredChoice && !bootstrap.value?.savePath) {
-    editableSavePath.value = '';
+  if (savePathChoiceModal.fromRequiredChoice && !bootstrapStore.bootstrap?.savePath) {
+    bootstrapStore.editableSavePath = '';
   }
 
   savePathChoiceModal.fromRequiredChoice = false;
+}
+
+async function saveChosenDetectedPath(savePath: string): Promise<void> {
+  try {
+    await bootstrapStore.saveSavePath(savePath);
+    await rolesStore.refreshRoles();
+    message.success('存档路径已保存。');
+  } catch (error) {
+    message.error(getErrorMessage(error));
+  }
 }
 
 async function submitSavePathChoice(): Promise<void> {
@@ -311,492 +109,54 @@ async function submitSavePathChoice(): Promise<void> {
   savePathChoiceModal.fromRequiredChoice = false;
 }
 
-async function refreshBootstrap(): Promise<void> {
-  loading.bootstrap = true;
-
-  try {
-    bootstrap.value = await toolboxApi.getBootstrap();
-    editableSavePath.value = bootstrap.value.savePath;
-
-    if (bootstrap.value.requiresSavePathChoice && bootstrap.value.detectedSavePaths.length > 1) {
-      openSavePathChoiceModal();
-    }
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.bootstrap = false;
-  }
-}
-
-async function refreshRoles(): Promise<void> {
-  if (!bootstrap.value?.savePath) {
-    roles.value = [];
-    return;
-  }
-
-  loading.roles = true;
-
-  try {
-    roles.value = await toolboxApi.scanRoles(bootstrap.value.savePath);
-  } catch (error) {
-    roles.value = [];
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.roles = false;
-  }
-}
-
-async function refreshPackages(): Promise<void> {
-  loading.packages = true;
-
-  try {
-    packages.value = await toolboxApi.listPackages();
-  } catch (error) {
-    packages.value = [];
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.packages = false;
-  }
-}
-
-async function refreshUidMappings(): Promise<void> {
-  loading.uidMappings = true;
-
-  try {
-    uidMappings.value = await toolboxApi.listUidUnameMappings();
-  } catch (error) {
-    uidMappings.value = [];
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.uidMappings = false;
-  }
-}
-
-async function refreshUpdateState(): Promise<void> {
-  try {
-    updateState.value = await toolboxApi.getUpdateState();
-    showUpdateModal.value = updateState.value.status === 'available' || updateState.value.status === 'ready' || updateState.value.status === 'error';
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  }
-}
-
 async function refreshAll(): Promise<void> {
-  await refreshBootstrap();
+  await runSafe(() => bootstrapStore.refreshBootstrap());
+
+  if (bootstrapStore.requiresSavePathChoice && bootstrapStore.detectedSavePaths.length > 1) {
+    openSavePathChoiceModal();
+  }
+
   await Promise.all([
-    refreshRoles(),
-    refreshPackages(),
-    refreshUidMappings(),
+    runSafe(() => rolesStore.refreshRoles()),
+    runSafe(() => packagesStore.refreshPackages()),
+    runSafe(() => uidMappingsStore.refreshUidMappings()),
   ]);
 }
 
-async function switchView(view: ViewKey): Promise<void> {
-  currentView.value = view;
-  selectedMenuKeys.value = view === 'config' ? [] : [view];
-
-  if (view === 'roles') {
-    await refreshRoles();
-  }
-
-  if (view === 'archives') {
-    await refreshPackages();
-  }
-}
-
-async function syncWindowMaximizedState(): Promise<void> {
-  try {
-    isWindowMaximized.value = await toolboxApi.isWindowMaximized();
-  } catch {
-    isWindowMaximized.value = false;
-  }
-}
-
 async function handleMinimizeWindow(): Promise<void> {
-  await toolboxApi.minimizeWindow();
+  await minimize();
 }
 
 async function handleToggleMaximizeWindow(): Promise<void> {
-  isWindowMaximized.value = await toolboxApi.toggleMaximizeWindow();
+  await toggleMaximize();
 }
 
 async function handleCloseWindow(): Promise<void> {
-  await toolboxApi.closeWindow();
+  await close();
 }
 
-async function handleBrowseSavePath(): Promise<void> {
-  try {
-    const selectedPath = await toolboxApi.chooseSavePath();
+provide('openSavePathChoiceModal', openSavePathChoiceModal);
 
-    if (selectedPath) {
-      editableSavePath.value = selectedPath;
-    }
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  }
-}
+onMounted(async () => {
+  updateStore.startListening();
+  await refreshAll();
 
-async function handleUseDetectedPath(): Promise<void> {
-  if (!bootstrap.value) {
-    return;
+  if (route.name === 'home') {
+    await router.replace(bootstrapStore.hasSavePath ? '/roles' : '/config');
   }
 
-  if (bootstrap.value.detectedSavePaths.length > 1) {
-    openSavePathChoiceModal(true);
-    return;
-  }
-
-  if (bootstrap.value.autoDetectedPath) {
-    editableSavePath.value = bootstrap.value.autoDetectedPath;
-  }
-}
-
-async function handleSavePath(): Promise<void> {
-  const targetPath = editableSavePath.value.trim();
-
-  if (!targetPath) {
-    message.warning('请先输入或选择存档路径。');
-    return;
-  }
-
-  loading.savePath = true;
-
-  try {
-    bootstrap.value = await toolboxApi.updateSavePath(targetPath);
-    editableSavePath.value = bootstrap.value.savePath;
-    await refreshRoles();
-    message.success('存档路径已保存。');
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.savePath = false;
-  }
-}
-
-async function handleUpdatePreferenceChange(next: { autoUpdateEnabled?: boolean; updateChannel?: string; skippedUpdateVersion?: string | null }): Promise<void> {
-  if (!bootstrap.value) {
-    return;
-  }
-
-  loading.updatePreferences = true;
-
-  try {
-    bootstrap.value = await toolboxApi.setUpdatePreferences({
-      autoUpdateEnabled: next.autoUpdateEnabled ?? (bootstrap.value.autoUpdateEnabled ?? true),
-      updateChannel: next.updateChannel ?? (bootstrap.value.updateChannel ?? 'stable'),
-      skippedUpdateVersion: next.skippedUpdateVersion ?? bootstrap.value.skippedUpdateVersion ?? null,
-    });
-    message.success('更新设置已保存。');
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.updatePreferences = false;
-  }
-}
-
-async function handleCheckForUpdates(): Promise<void> {
-  loading.updateCheck = true;
-
-  try {
-    const result = await toolboxApi.checkForUpdates();
-    updateState.value = result.state;
-    showUpdateModal.value = result.state.status === 'available' || result.state.status === 'ready' || result.state.status === 'error';
-
-    if (result.state.status === 'not-available') {
-      message.success(result.state.message);
-    } else if (result.state.status === 'error') {
-      message.error(updateErrorDisplayMessage.value);
-    }
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.updateCheck = false;
-  }
-}
-
-async function handleDownloadUpdate(): Promise<void> {
-  loading.updateDownload = true;
-  showUpdateModal.value = true;
-
-  try {
-    const result = await toolboxApi.downloadUpdate();
-    updateState.value = result.state;
-    showUpdateModal.value = result.state.status === 'available' || result.state.status === 'ready' || result.state.status === 'error';
-
-    if (result.state.status === 'error') {
-      message.error(updateErrorDisplayMessage.value);
-    }
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.updateDownload = false;
-  }
-}
-
-async function handleOpenArchiveFolder(): Promise<void> {
-  try {
-    await toolboxApi.openArchiveFolder();
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  }
-}
-
-async function handleOpenDownloadedFile(): Promise<void> {
-  if (!updateState.value.downloadDirectory) {
-    message.warning('下载目录还不可用。');
-    return;
-  }
-
-  try {
-    await toolboxApi.openFileInFolder(updateState.value.downloadDirectory);
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  }
-}
-
-async function handleInstallUpdate(): Promise<void> {
-  await toolboxApi.quitAndInstallUpdate();
-}
-
-async function handleSkipCurrentVersion(): Promise<void> {
-  if (!updateState.value.nextVersion) {
-    return;
-  }
-
-  await handleUpdatePreferenceChange({ skippedUpdateVersion: updateState.value.nextVersion });
-  showUpdateModal.value = false;
-  await handleCheckForUpdates();
-}
-
-function closeUpdateModal(): void {
-  showUpdateModal.value = false;
-}
-
-function openBackupModal(role: RoleProfile): void {
-  backupModal.open = true;
-  backupModal.role = role;
-  backupModal.archiveName = role.folderName;
-}
-
-function closeBackupModal(): void {
-  backupModal.open = false;
-  backupModal.role = null;
-  backupModal.archiveName = '';
-}
-
-async function submitBackup(): Promise<void> {
-  if (!backupModal.role) {
-    return;
-  }
-
-  loading.backup = true;
-
-  try {
-    const created = await toolboxApi.createBackup({
-      rolePath: backupModal.role.fullPath,
-      archiveName: backupModal.archiveName,
-    });
-
-    message.success(`已创建存档：${created.filename}`);
-    closeBackupModal();
-    await refreshPackages();
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.backup = false;
-  }
-}
-
-async function openApplyModal(role: RoleProfile): Promise<void> {
-  await refreshPackages();
-  applyModal.open = true;
-  applyModal.role = role;
-  applyModal.step = 0;
-  applyModal.selectedPackageFilename = packages.value[0]?.filename ?? '';
-  applyModal.selectedSettings = settingOptions.map((option) => option.value);
-}
-
-function closeApplyModal(): void {
-  applyModal.open = false;
-  applyModal.role = null;
-  applyModal.step = 0;
-  applyModal.selectedPackageFilename = '';
-  applyModal.selectedSettings = [];
-}
-
-async function advanceApplyStep(): Promise<void> {
-  if (!applyModal.selectedPackageFilename) {
-    message.warning('请先选择一个要应用的存档。');
-    return;
-  }
-
-  applyModal.step = 1;
-}
-
-async function submitApply(): Promise<void> {
-  if (!applyModal.role) {
-    return;
-  }
-
-  if (!applyModal.selectedSettings.length) {
-    message.warning('请至少选择一个设置项。');
-    return;
-  }
-
-  loading.apply = true;
-
-  try {
-    await toolboxApi.applyBackup({
-      rolePath: applyModal.role.fullPath,
-      packageFilename: applyModal.selectedPackageFilename,
-      selectedSettings: [...applyModal.selectedSettings],
-    });
-
-    message.success('存档设置已成功应用到目标角色。');
-    closeApplyModal();
-    await refreshRoles();
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.apply = false;
-  }
-}
-
-function openRenameModal(target: BackupPackageInfo): void {
-  renameModal.open = true;
-  renameModal.target = target;
-  renameModal.newDisplayName = target.displayName;
-}
-
-function closeRenameModal(): void {
-  renameModal.open = false;
-  renameModal.target = null;
-  renameModal.newDisplayName = '';
-}
-
-function confirmDelete(target: BackupPackageInfo): void {
-  Modal.confirm({
-    title: '确定要删除这个存档吗？',
-    okText: '删除',
-    cancelText: '取消',
-    okButtonProps: { danger: true },
-    onOk: () => submitDelete(target),
-  });
-}
-
-async function submitRename(): Promise<void> {
-  if (!renameModal.target) {
-    return;
-  }
-
-  loading.rename = true;
-
-  try {
-    packages.value = await toolboxApi.renameBackup({
-      filename: renameModal.target.filename,
-      newDisplayName: renameModal.newDisplayName,
-    });
-
-    message.success('存档名称已更新。');
-    closeRenameModal();
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.rename = false;
-  }
-}
-
-async function submitDelete(target: BackupPackageInfo): Promise<void> {
-  loading.remove = true;
-
-  try {
-    packages.value = await toolboxApi.deleteBackup({
-      filename: target.filename,
-    });
-
-    message.success('存档已删除。');
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.remove = false;
-  }
-}
-
-function openUidMappingModal(): void {
-  uidMappingModal.open = true;
-  uidMappingModal.uid = '';
-  uidMappingModal.uname = '';
-}
-
-function closeUidMappingModal(): void {
-  uidMappingModal.open = false;
-  uidMappingModal.uid = '';
-  uidMappingModal.uname = '';
-}
-
-async function performUidMappingSave(uid: string, uname: string): Promise<void> {
-  loading.uidMappingSave = true;
-
-  try {
-    await toolboxApi.upsertUidUnameMapping({ uid, uname });
-    message.success('UID 关联已保存。');
-    closeUidMappingModal();
-    await refreshUidMappings();
-  } catch (error) {
-    message.error(getErrorMessage(error));
-  } finally {
-    loading.uidMappingSave = false;
-  }
-}
-
-function submitUidMapping(): void {
-  const uid = uidMappingModal.uid.trim();
-  const uname = uidMappingModal.uname.trim();
-
-  if (!uid || !uname) {
-    message.warning('请先输入 UID 和角色名。');
-    return;
-  }
-
-  const existingUname = uidToUnameMap.value.get(uid);
-
-  if (existingUname) {
-    Modal.confirm({
-      title: `UID ${uid} 已关联为 ${existingUname}，是否更新为 ${uname}？`,
-      okText: '更新',
-      cancelText: '取消',
-      okButtonProps: { danger: true },
-      onOk: () => performUidMappingSave(uid, uname),
-    });
-    return;
-  }
-
-  void performUidMappingSave(uid, uname);
-}
-
-onMounted(() => {
-  stopUpdateStateListener = toolboxApi.onUpdateStateChanged((state) => {
-    updateState.value = state;
-    showUpdateModal.value = state.status === 'available' || state.status === 'ready' || state.status === 'error';
-  });
-
-  void refreshAll().then(() => {
-    setInitialView();
-  });
-  void syncWindowMaximizedState();
-  void refreshUpdateState();
+  void syncMaximizedState();
+  void runSafe(() => updateStore.refreshUpdateState());
 });
 
 onUnmounted(() => {
-  stopUpdateStateListener?.();
+  updateStore.stopListening();
 });
 </script>
 
 <template>
   <a-layout class="app-shell">
-    <a-layout-sider
-      class="sidebar"
-      :width="272"
-    >
+    <a-layout-sider class="sidebar" :width="272">
       <div class="brand-panel">
         <div>
           <div class="brand-title">AstroToolbox</div>
@@ -804,26 +164,16 @@ onUnmounted(() => {
       </div>
 
       <a-menu
-        v-model:selectedKeys="selectedMenuKeys"
-        v-model:openKeys="openMenuKeys"
+        v-model:open-keys="openMenuKeys"
+        :selected-keys="selectedMenuKeys"
         class="nav-menu"
         mode="inline"
         theme="light"
       >
         <a-sub-menu key="role-sync">
           <template #title>角色同步</template>
-          <a-menu-item
-            key="roles"
-            @click="switchView('roles')"
-          >
-            角色备份
-          </a-menu-item>
-          <a-menu-item
-            key="archives"
-            @click="switchView('archives')"
-          >
-            存档管理
-          </a-menu-item>
+          <a-menu-item key="roles" @click="router.push('/roles')">角色备份</a-menu-item>
+          <a-menu-item key="archives" @click="router.push('/archives')">存档管理</a-menu-item>
         </a-sub-menu>
       </a-menu>
     </a-layout-sider>
@@ -835,10 +185,7 @@ onUnmounted(() => {
         </div>
 
         <div class="topbar-right">
-          <a-space
-            class="topbar-actions"
-            wrap
-          >
+          <a-space class="topbar-actions" wrap>
             <a-tag color="processing">角色 {{ stats.roleCount }}</a-tag>
             <a-tag color="blue">存档 {{ stats.packageCount }}</a-tag>
             <a-tag :color="stats.savePathExists ? 'green' : 'red'">
@@ -853,7 +200,7 @@ onUnmounted(() => {
               class="toolbar-icon-btn"
               aria-label="工具箱配置"
               title="工具箱配置"
-              @click="switchView('config')"
+              @click="router.push('/config')"
             >
               ⚙
             </button>
@@ -889,375 +236,12 @@ onUnmounted(() => {
       </a-layout-header>
 
       <a-layout-content class="content">
-        <a-spin
-          :spinning="loading.bootstrap"
-          tip="正在加载 AstroToolbox..."
-        >
-          <template v-if="currentView === 'config'">
-            <div class="view-grid view-grid--config">
-              <a-card class="glass-card hero-card">
-                <div class="card-headline">
-                  <div>
-                    <h2>存档路径配置</h2>
-                  </div>
-                  <a-tag :color="bootstrap?.savePathExists ? 'blue' : 'geekblue'">
-                    {{ bootstrap?.savePathExists ? '已识别' : '待校验' }}
-                  </a-tag>
-                </div>
-
-                <a-form layout="vertical">
-                  <a-form-item label="当前存档路径">
-                    <a-input
-                      v-model:value="editableSavePath"
-                      placeholder="请输入路径"
-                      size="large"
-                    />
-                  </a-form-item>
-
-                  <div class="toolbar-actions">
-                    <a-button
-                      type="primary"
-                      size="large"
-                      :loading="loading.savePath"
-                      @click="handleSavePath"
-                    >
-                      保存配置
-                    </a-button>
-                    <a-button
-                      size="large"
-                      @click="handleBrowseSavePath"
-                    >
-                      浏览目录
-                    </a-button>
-                    <a-button
-                      size="large"
-                      @click="handleUseDetectedPath"
-                    >
-                      使用自动识别
-                    </a-button>
-                    <a-button
-                      v-if="bootstrap?.backupDirectory"
-                      size="large"
-                      @click="handleOpenArchiveFolder"
-                    >
-                      打开当前存档文件夹
-                    </a-button>
-                    <a-button
-                      size="large"
-                      :loading="loading.uidMappings"
-                      @click="openUidMappingModal"
-                    >
-                      上传 UID 关联
-                    </a-button>
-                  </div>
-                </a-form>
-              </a-card>
-
-              <a-card class="glass-card details-card">
-                <div class="summary-panel">
-                  <div class="summary-stat">
-                    <strong>{{ stats.roleCount }}</strong>
-                    <span>已扫描角色</span>
-                  </div>
-                  <div class="summary-stat">
-                    <strong>{{ stats.packageCount }}</strong>
-                    <span>本地存档</span>
-                  </div>
-                </div>
-              </a-card>
-
-              <a-card class="glass-card details-card update-card">
-                <div class="card-headline">
-                  <div>
-                    <h2>在线更新</h2>
-                  </div>
-                  <a-tag :color="updateStatusColor">{{ updateStatusLabel }}</a-tag>
-                </div>
-
-                <div class="detail-list">
-                  <div>
-                    <span>当前版本</span>
-                    <strong>{{ updateState.currentVersion || '未知' }}</strong>
-                  </div>
-                  <div>
-                    <span>目标版本</span>
-                    <strong>{{ updateState.nextVersion || '暂无' }}</strong>
-                  </div>
-                  <div>
-                    <span>最近检查</span>
-                    <strong>{{ updateState.lastCheckedAt ? formatDate(updateState.lastCheckedAt) : '从未检查' }}</strong>
-                  </div>
-                  <div>
-                    <span>更新通道</span>
-                    <a-select
-                      v-model:value="updateChannel"
-                      :options="updateChannelOptions"
-                      :loading="loading.updatePreferences"
-                      size="large"
-                    />
-                  </div>
-                  <div>
-                    <span>自动检查</span>
-                    <a-switch
-                      v-model:checked="autoUpdateEnabled"
-                      :loading="loading.updatePreferences"
-                    />
-                  </div>
-                </div>
-
-                <div class="toolbar-actions">
-                  <a-button
-                    type="primary"
-                    :loading="loading.updateCheck"
-                    @click="handleCheckForUpdates"
-                  >
-                    检查更新
-                  </a-button>
-                  <a-button
-                    :disabled="updateState.status !== 'available'"
-                    :loading="loading.updateDownload"
-                    @click="handleDownloadUpdate"
-                  >
-                    下载更新
-                  </a-button>
-                  <a-button
-                    :disabled="!updateState.downloadDirectory"
-                    @click="handleOpenDownloadedFile"
-                  >
-                    打开下载目录
-                  </a-button>
-                </div>
-              </a-card>
-            </div>
-          </template>
-
-          <template v-else-if="currentView === 'roles'">
-            <div class="page-section">
-              <a-card class="glass-card">
-                <div class="card-headline">
-                  <div>
-                    <h2>角色列表</h2>
-                  </div>
-                  <a-space wrap>
-                    <a-tag color="blue">{{ roles.length }} 个角色</a-tag>
-                    <a-button
-                      :loading="loading.roles"
-                      @click="refreshRoles"
-                    >
-                      重新扫描
-                    </a-button>
-                  </a-space>
-                </div>
-
-                <div
-                  v-if="sortedRoles.length"
-                  class="role-grid"
-                >
-                  <a-card
-                    v-for="role in sortedRoles"
-                    :key="role.id"
-                    class="role-card"
-                    :bordered="false"
-                  >
-                    <div class="role-card__header">
-                      <div>
-                        <h3>{{ getRoleDisplayName(role) }}</h3>
-                      </div>
-                      <a-tag color="blue">角色</a-tag>
-                    </div>
-
-                    <div class="detail-list">
-                      <div>
-                        <span>最近更新</span>
-                        <strong>{{ formatDate(role.updatedAt) }}</strong>
-                      </div>
-                    </div>
-
-                    <div class="toolbar-actions">
-                      <a-button
-                        type="primary"
-                        @click="openBackupModal(role)"
-                      >
-                        备份存档
-                      </a-button>
-                      <a-button @click="openApplyModal(role)">应用存档</a-button>
-                    </div>
-                  </a-card>
-                </div>
-
-                <a-empty
-                  v-else
-                  description="未找到可用角色"
-                  class="empty-card"
-                />
-              </a-card>
-            </div>
-          </template>
-
-          <template v-else>
-            <div class="page-section">
-              <a-card class="glass-card">
-                <div class="card-headline">
-                  <div>
-                    <h2>存档列表</h2>
-                  </div>
-                  <a-space wrap>
-                    <a-tag color="blue">{{ packages.length }} 个文件</a-tag>
-                    <a-button
-                      :loading="loading.packages"
-                      @click="refreshPackages"
-                    >
-                      刷新列表
-                    </a-button>
-                  </a-space>
-                </div>
-
-                <div
-                  v-if="packages.length"
-                  class="archive-grid"
-                >
-                  <a-card
-                    v-for="item in packages"
-                    :key="item.filename"
-                    class="role-card"
-                    :bordered="false"
-                  >
-                    <div class="role-card__header">
-                      <div>
-                        <h3>{{ item.displayName }}</h3>
-                      </div>
-                      <a-tag color="blue">存档</a-tag>
-                    </div>
-
-                    <div class="detail-list">
-                      <div>
-                        <span>创建时间</span>
-                        <strong>{{ formatDate(item.createdAt) }}</strong>
-                      </div>
-                    </div>
-
-                    <div class="toolbar-actions">
-                      <a-button @click="openRenameModal(item)">重命名</a-button>
-                      <a-button
-                        danger
-                        :loading="loading.remove"
-                        @click="confirmDelete(item)"
-                      >
-                        删除
-                      </a-button>
-                    </div>
-                  </a-card>
-                </div>
-
-                <a-empty
-                  v-else
-                  description="当前没有本地存档"
-                  class="empty-card"
-                />
-              </a-card>
-            </div>
-          </template>
+        <a-spin :spinning="bootstrapStore.loading" tip="正在加载 AstroToolbox...">
+          <router-view />
         </a-spin>
       </a-layout-content>
     </a-layout>
   </a-layout>
-
-    <a-modal
-      v-model:open="showUpdateModal"
-      class="toolbox-modal"
-      :title="updateState.isForced ? '强制更新' : '发现新版本'"
-      :footer="null"
-      :closable="!updateState.isForced"
-      :mask-closable="!updateState.isForced"
-      @cancel="closeUpdateModal"
-    >
-      <div
-        v-if="updateState.status === 'error'"
-        class="update-error-panel"
-      >
-        <div class="update-error-panel__header">
-          <span class="update-error-panel__stage">{{ updateErrorStageLabel || '异常' }}</span>
-          <strong>{{ updateErrorDisplayMessage }}</strong>
-        </div>
-        <div class="update-error-panel__body">
-          <div>
-            <span>原始错误</span>
-            <strong>{{ updateState.errorMessage || '暂无' }}</strong>
-          </div>
-          <div v-if="updateState.errorDetail">
-            <span>详细信息</span>
-            <code>{{ updateState.errorDetail }}</code>
-          </div>
-        </div>
-      </div>
-
-      <div class="detail-list">
-        <div>
-          <span>更新状态</span>
-          <strong>{{ updateState.message }}</strong>
-        </div>
-        <div>
-          <span>当前版本</span>
-          <strong>{{ updateState.currentVersion || '未知' }}</strong>
-        </div>
-        <div>
-          <span>目标版本</span>
-          <strong>{{ updateState.nextVersion || '暂无' }}</strong>
-        </div>
-        <div>
-          <span>发布说明</span>
-          <strong class="release-notes">{{ updateState.releaseNotes || '暂无说明' }}</strong>
-        </div>
-        <div v-if="updateState.downloadDirectory">
-          <span>下载目录</span>
-          <strong>{{ updateState.downloadDirectory }}</strong>
-          <a-button
-            size="small"
-            @click="handleOpenDownloadedFile"
-          >
-            打开所在文件夹
-          </a-button>
-        </div>
-      </div>
-
-      <div class="modal-actions">
-        <a-button
-          v-if="!updateState.isForced"
-          @click="handleSkipCurrentVersion"
-        >
-          跳过此版本
-        </a-button>
-        <a-button
-          v-if="!updateState.isForced"
-          @click="closeUpdateModal"
-        >
-          稍后再说
-        </a-button>
-        <a-button
-          v-if="updateState.status === 'available'"
-          type="primary"
-          :loading="loading.updateDownload"
-          @click="handleDownloadUpdate"
-        >
-          立即下载
-        </a-button>
-        <a-button
-          v-if="updateState.status === 'ready'"
-          type="primary"
-          @click="handleInstallUpdate"
-        >
-          立即安装
-        </a-button>
-        <a-button
-          v-if="updateState.status === 'error'"
-          type="primary"
-          :loading="loading.updateCheck"
-          @click="handleCheckForUpdates"
-        >
-          重新检查
-        </a-button>
-      </div>
-    </a-modal>
 
   <a-modal
     v-model:open="savePathChoiceModal.open"
@@ -1265,16 +249,13 @@ onUnmounted(() => {
     title="检测到多个客户端存档，请选择一个"
     ok-text="使用所选路径"
     cancel-text="取消"
-    :confirm-loading="loading.savePath"
+    :confirm-loading="bootstrapStore.saving"
     @ok="submitSavePathChoice"
     @cancel="closeSavePathChoiceModal"
   >
-    <a-radio-group
-      v-model:value="savePathChoiceModal.selectedSavePath"
-      class="package-picker"
-    >
+    <a-radio-group v-model:value="savePathChoiceModal.selectedSavePath" class="package-picker">
       <div
-        v-for="item in bootstrap?.detectedSavePaths ?? []"
+        v-for="item in bootstrapStore.detectedSavePaths"
         :key="item.client"
         class="package-choice"
         :class="{ 'package-choice--active': savePathChoiceModal.selectedSavePath === item.savePath }"
@@ -1288,179 +269,256 @@ onUnmounted(() => {
       </div>
     </a-radio-group>
   </a-modal>
-
-  <a-modal
-    v-model:open="backupModal.open"
-    class="toolbox-modal"
-    title="备份角色存档"
-    width="720px"
-    :footer="null"
-    @cancel="closeBackupModal"
-  >
-    <a-form layout="vertical">
-      <a-form-item label="当前角色">
-        <a-input
-          :value="backupModal.role ? getRoleDisplayName(backupModal.role) : '未选择'"
-          disabled
-        />
-      </a-form-item>
-      <a-form-item label="备份名称">
-        <a-input
-          v-model:value="backupModal.archiveName"
-          placeholder="请输入备份名称"
-        />
-      </a-form-item>
-      <a-form-item label="角色路径">
-        <a-input
-          :value="backupModal.role?.fullPath || ''"
-          disabled
-        />
-      </a-form-item>
-    </a-form>
-
-    <div class="modal-actions">
-      <a-button @click="closeBackupModal">取消</a-button>
-      <a-button
-        type="primary"
-        :loading="loading.backup"
-        :disabled="!backupModal.role || !backupModal.archiveName.trim()"
-        @click="submitBackup"
-      >
-        创建备份
-      </a-button>
-    </div>
-  </a-modal>
-  <a-modal
-    v-model:open="applyModal.open"
-    class="toolbox-modal"
-    title="应用角色存档"
-    width="720px"
-    :footer="null"
-    @cancel="closeApplyModal"
-  >
-    <a-steps
-      :current="applyModal.step"
-      size="small"
-      class="modal-steps"
-    >
-      <a-step title="选择存档" />
-      <a-step title="勾选同步项" />
-    </a-steps>
-
-    <div v-if="applyModal.step === 0">
-      <a-empty
-        v-if="!packages.length"
-        description="当前没有可应用的存档。"
-      />
-
-      <a-radio-group
-        v-else
-        v-model:value="applyModal.selectedPackageFilename"
-        class="package-picker"
-      >
-        <div
-          v-for="item in packages"
-          :key="item.filename"
-          class="package-choice"
-          :class="{ 'package-choice--active': applyModal.selectedPackageFilename === item.filename }"
-        >
-          <a-radio :value="item.filename">
-            <div class="package-choice__body">
-              <strong>{{ item.displayName }}</strong>
-              <small>{{ formatDate(item.createdAt) }} · {{ formatSize(item.size) }}</small>
-            </div>
-          </a-radio>
-        </div>
-      </a-radio-group>
-    </div>
-
-    <div v-else>
-      <div class="setting-panel">
-        <div class="path-box path-box--compact">
-          <span>当前选中存档</span>
-          <strong>{{ selectedPackage?.displayName || '未选择' }}</strong>
-        </div>
-        <a-checkbox-group
-          v-model:value="applyModal.selectedSettings"
-          :options="settingCheckboxOptions"
-          class="checkbox-group"
-        />
-      </div>
-    </div>
-
-    <div class="modal-actions">
-      <a-button @click="closeApplyModal">取消</a-button>
-      <a-button
-        v-if="applyModal.step === 1"
-        @click="applyModal.step = 0"
-      >
-        上一步
-      </a-button>
-      <a-button
-        v-if="applyModal.step === 0"
-        type="primary"
-        :disabled="!packages.length || !applyModal.selectedPackageFilename"
-        @click="advanceApplyStep"
-      >
-        下一步
-      </a-button>
-      <a-button
-        v-else
-        type="primary"
-        :loading="loading.apply"
-        :disabled="!applyModal.selectedSettings.length"
-        @click="submitApply"
-      >
-        确定应用
-      </a-button>
-    </div>
-  </a-modal>
-  <a-modal
-    v-model:open="renameModal.open"
-    class="toolbox-modal"
-    title="重命名存档"
-    ok-text="保存名称"
-    cancel-text="取消"
-    :confirm-loading="loading.rename"
-    @ok="submitRename"
-    @cancel="closeRenameModal"
-  >
-    <a-form layout="vertical">
-      <a-form-item label="当前名称">
-        <a-input :value="renameModal.target?.displayName" disabled />
-      </a-form-item>
-      <a-form-item label="新的存档名称">
-        <a-input
-          v-model:value="renameModal.newDisplayName"
-          placeholder="请输入新名称"
-        />
-      </a-form-item>
-    </a-form>
-  </a-modal>
-
-  <a-modal
-    v-model:open="uidMappingModal.open"
-    class="toolbox-modal"
-    title="上传 UID 关联"
-    ok-text="保存关联"
-    cancel-text="取消"
-    :confirm-loading="loading.uidMappingSave"
-    @ok="submitUidMapping"
-    @cancel="closeUidMappingModal"
-  >
-    <a-form layout="vertical">
-      <a-form-item label="UID">
-        <a-input
-          v-model:value="uidMappingModal.uid"
-          placeholder="请输入 UID"
-        />
-      </a-form-item>
-      <a-form-item label="角色名">
-        <a-input
-          v-model:value="uidMappingModal.uname"
-          placeholder="请输入角色名"
-        />
-      </a-form-item>
-    </a-form>
-  </a-modal>
 </template>
+
+<style scoped>
+.app-shell.ant-layout {
+  min-height: 100vh;
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: transparent;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.app-shell.ant-layout::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.sidebar.ant-layout-sider {
+  display: flex;
+  flex-direction: column;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(238, 245, 255, 0.96)),
+    radial-gradient(circle at top, rgba(77, 150, 255, 0.12), transparent 38%);
+  padding: 26px 20px 20px;
+  box-shadow: none;
+}
+
+.brand-panel {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 8px 22px;
+  color: var(--ink-main);
+}
+
+.brand-title {
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.nav-menu.ant-menu-light.ant-menu-root.ant-menu-inline,
+.nav-menu.ant-menu-light.ant-menu-root.ant-menu-vertical {
+  background: transparent;
+  border-inline-end: none !important;
+}
+
+.nav-menu.ant-menu-light :deep(.ant-menu-item) {
+  display: flex;
+  align-items: center;
+  border-radius: 14px;
+  margin-block: 8px;
+  height: 48px;
+  line-height: 48px;
+  font-size: 15px;
+  color: var(--ink-main);
+}
+
+.nav-menu.ant-menu-light :deep(.ant-menu-item-selected) {
+  background: linear-gradient(135deg, rgba(77, 150, 255, 0.16), rgba(47, 115, 222, 0.18));
+  color: #1d4ed8;
+}
+
+.nav-menu.ant-menu-light :deep(.ant-menu-item:hover) {
+  background: rgba(77, 150, 255, 0.08);
+}
+
+.topbar.ant-layout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  height: auto;
+  min-height: 72px;
+  padding: 14px 18px 14px 36px;
+  position: sticky;
+  top: 0;
+  z-index: 900;
+  background: #ffffff;
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line-soft);
+  -webkit-app-region: drag;
+}
+
+.topbar-left {
+  min-width: 0;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.12;
+  letter-spacing: -0.02em;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  min-width: 0;
+}
+
+.topbar-actions {
+  justify-content: flex-end;
+  align-items: center;
+  max-width: 540px;
+  -webkit-app-region: no-drag;
+}
+
+.topbar-actions :deep(.ant-tag) {
+  border-radius: 999px;
+  padding-inline: 12px;
+  margin-inline-end: 0;
+}
+
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+}
+
+.toolbar-icon-btn,
+.window-control-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink-main);
+  cursor: pointer;
+  user-select: none;
+  font-size: 18px;
+  line-height: 1;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease,
+    color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.toolbar-icon-btn:hover,
+.window-control-btn:hover {
+  transform: translateY(-1px);
+  border-color: rgba(77, 150, 255, 0.34);
+  background: rgba(77, 150, 255, 0.1);
+}
+
+.window-control-btn--close:hover {
+  border-color: rgba(220, 38, 38, 0.35);
+  background: rgba(220, 38, 38, 0.14);
+  color: #b91c1c;
+}
+
+.content.ant-layout-content {
+  padding: 12px 36px 36px;
+  background: transparent;
+}
+
+.toolbox-modal :deep(.ant-modal-content),
+.toolbox-modal :deep(.ant-modal-header) {
+  border-radius: 22px;
+}
+
+.package-picker {
+  display: grid;
+  gap: 12px;
+}
+
+.package-choice {
+  padding: 14px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.76);
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.package-choice:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-soft);
+}
+
+.package-choice--active {
+  border-color: rgba(77, 150, 255, 0.4);
+  box-shadow: 0 12px 28px rgba(77, 150, 255, 0.12);
+}
+
+.package-choice__body {
+  display: grid;
+  gap: 4px;
+  margin-left: 10px;
+}
+
+.package-choice__body small {
+  color: var(--ink-muted);
+}
+
+@media (max-width: 980px) {
+  .app-shell.ant-layout {
+    flex-direction: column;
+  }
+
+  .sidebar.ant-layout-sider {
+    position: static;
+    width: 100% !important;
+    max-width: none !important;
+    flex: none !important;
+    height: auto;
+  }
+
+  .topbar.ant-layout-header,
+  .content.ant-layout-content {
+    padding-inline: 20px;
+  }
+
+  .topbar.ant-layout-header {
+    flex-direction: column;
+    align-items: flex-start;
+    -webkit-app-region: no-drag;
+  }
+
+  .topbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 640px) {
+  .page-title {
+    font-size: 28px;
+  }
+
+  .topbar-right {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .topbar-actions {
+    justify-content: flex-start;
+  }
+}
+</style>

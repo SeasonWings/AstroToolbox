@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { ToolboxApi } from '../shared/contracts';
+import type { ToolboxApi } from '../shared/index';
 
 declare global {
   interface Window {
@@ -9,4 +9,3 @@ declare global {
 }
 
 export {};
-

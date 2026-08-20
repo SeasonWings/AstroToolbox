@@ -2,6 +2,6 @@ node_modules
 dist
 dist-electron
 release
+package-lock.json
+pnpm-lock.yaml
 *.log
-.idea/
-

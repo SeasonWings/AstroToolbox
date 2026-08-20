@@ -7,16 +7,9 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": [
-      "node",
-      "electron"
-    ],
+    "types": ["node", "electron"],
     "rootDir": ".",
     "outDir": "dist-electron"
   },
-  "include": [
-    "electron/**/*.ts",
-    "shared/**/*.ts"
-  ]
+  "include": ["electron/**/*.ts", "shared/**/*.ts"]
 }
-
